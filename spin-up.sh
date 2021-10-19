@@ -5,6 +5,9 @@ BINARY_IMAGE=cosmoscontracts/juno:latest
 CHAINID=test-chain-id	
 CHAINDIR=./workspace	
 
+VALIDATOR='validator'
+NODE='node'
+
 KBT="--keyring-backend=test"
 
 echo "Creating $BINARY instance with home=$CHAINDIR chain-id=$CHAINID..."	
@@ -57,16 +60,16 @@ gentx() {
 add_genesis_account_to_node0() {
     echo "add_genesis_account_to_node0: $1"
     home=$(get_home $1)
-    home0=$(get_home node0)
+    home0=$(get_home ${VALIDATOR}0)
     $BINARY --home $home0 add-genesis-account $($BINARY --home $home keys $KBT show $1 -a) $MAXCOINS  $KBT &>/dev/null	
 }
 
 copy_all_gentx_and_add_genesis_account_to_node0(){
     echo "copy_all_gentx_and_add_genesis_account_to_node0"
-    dir0=$(get_home node0)
+    dir0=$(get_home ${VALIDATOR}0)
     n=1
     while ((n < $1)); do
-        nodeName="node$n"
+        nodeName="${VALIDATOR}$n"
         dir=$(get_home $nodeName)
         cp $dir/config/gentx/*  $dir0/config/gentx 
         add_genesis_account_to_node0 $nodeName
@@ -75,20 +78,23 @@ copy_all_gentx_and_add_genesis_account_to_node0(){
 }
 
 # create genesis file. node0 needs to execute this cmd
-collect_gentxs_from_node0(){
-    echo "collect_gentxs_from_node0"
-    home=$(get_home node0)
+collect_gentxs_from_validator0(){
+    echo "collect_gentxs_from_validator0"
+    home=$(get_home ${VALIDATOR}0)
     $BINARY --home $home collect-gentxs &>/dev/null	
     echo "$home/config/genesis.json"
 }
 
 
+# $1 = number of node
+# $2 = node type (VALIDATOR|NODE)
 copy_genesis_json_from_node0_to_other_node(){
     echo "copy_genesis_json_from_node0_to_other_node"
-    home0=$(get_home node0)
-    n=1
+    home0=$(get_home ${VALIDATOR}0)
+    # throw an error if home0 does not exist
+    n=0
     while ((n < $1)); do
-        nodeName="node$n"
+        nodeName="$2$n"
         home=$(get_home $nodeName)
         cp $home0/config/genesis.json  $home/config/
         let n=n+1
@@ -97,22 +103,28 @@ copy_genesis_json_from_node0_to_other_node(){
 
 replace_stake_denomination(){
     echo "replace denomination in genesis: stake->$DENOM"
-    home0=$(get_home node0)
+    home0=$(get_home ${VALIDATOR}0)
     sed -i "s/\"stake\"/\"$DENOM\"/g" $home0/config/genesis.json
 }
 
 
+# $1 = number of validators
+# $2 = number of nodes
+# $3 = the number of the current node
+# $4 = current node type (VALIDATOR|NODE)
 set_persistent_peers(){
-    echo "set_persistent_peers $1 $2"
-    currentNodeName="node$2"
+    echo "set_persistent_peers $1 $2 $3 $4"
+    currentNodeName="$4$3"
     currentNodeHome=$(get_home $currentNodeName)
     
     persistent_peers=""
     n=0
+    ip_nr=0
+    # validator loop
     while ((n < $1)); do
-        nodeName="node$n"
-        ipAddress="192.168.10.$n"
-        if [ "$n" != "$2" ]; then
+        nodeName="$VALIDATOR$n"
+        ipAddress="192.168.10.$ip_nr"
+        if [ "$n" != "$3"  ] || [ "$4" != "$VALIDATOR" ]; then
             home=$(get_home $nodeName)
             peer="$($BINARY --home $home tendermint show-node-id)@${ipAddress}:26656"
             if [ "$persistent_peers" != "" ]; then 
@@ -123,6 +135,27 @@ set_persistent_peers(){
         fi 
 
         let n=n+1
+        let ip_nr=ip_nr+1
+    done
+
+    # nodes loop
+    let n=0
+    ip_nr=$1
+    while ((n < $2)); do
+        nodeName="$NODE$n"
+        ipAddress="192.168.10.$ip_nr"
+        if [ "$n" != "$3" ] || [ "$4" != "$NODE" ]; then
+            home=$(get_home $nodeName)
+            peer="$($BINARY --home $home tendermint show-node-id)@${ipAddress}:26656"
+            if [ "$persistent_peers" != "" ]; then 
+                persistent_peers=$persistent_peers","$peer ;
+            else
+                persistent_peers=$peer
+            fi 
+        fi 
+
+        let n=n+1
+        let ip_nr=ip_nr+1
     done
 
    echo $currentNodeHome
@@ -131,38 +164,53 @@ set_persistent_peers(){
    
 }
  
-
+# $1 = number of validators
+# $2 = number of nodes
 set_persistent_peers_all_nodes() {
     echo "set_persistent_peers_all_nodes"
     node=0
+    # validator
     while ((node < $1)); do
-        set_persistent_peers $1 $node 
+        set_persistent_peers $1 $2 $node $VALIDATOR 
+        let node=node+1
+    done
+
+    let node=0
+     # validator
+    while ((node < $2)); do
+        set_persistent_peers $1 $2 $node $NODE 
         let node=node+1
     done
 }
 
-
+# $1 = number of node
+# $2 = node type (VALIDATOR|NODE)
 init_node () {
     n=0
     while ((n < $1)); do
-        nodeName="node$n"
+        nodeName="$2$n"
         echo "########## $nodeName ###############" 
         init_node_home $nodeName
         keys_add $nodeName
-        add_genesis_account $nodeName
-        gentx $nodeName
-        #set_persistent_peers $1 $n
+        if  [ "$2" = "$VALIDATOR" ]; then
+            add_genesis_account $nodeName
+            gentx $nodeName
+        fi 
         let n=n+1
     done
 
     echo "########## generate genesis.json ###############"
-    copy_all_gentx_and_add_genesis_account_to_node0 $1 
-    collect_gentxs_from_node0
-    replace_stake_denomination
-    copy_genesis_json_from_node0_to_other_node $1
-    set_persistent_peers_all_nodes $1
+     if  [ "$2" = "$VALIDATOR" ]; then
+            copy_all_gentx_and_add_genesis_account_to_node0 $1 
+            collect_gentxs_from_validator0
+            replace_stake_denomination
+     fi 
+    copy_genesis_json_from_node0_to_other_node $1 $2
 } 
 
+
+# $1 = number validators
+# $2 = number of nodes
 generate_docker_compose_file(){
     echo -e "version: '3'\n"
     echo -e "services:"
@@ -171,9 +219,9 @@ generate_docker_compose_file(){
     portStart=26656
     portEnd=26657
 
+    # validator config
     while ((n < $1)); do
-        nodeName="node$n"
-       
+        nodeName="$VALIDATOR$n"
         echo " $nodeName:"
         echo "   container_name: $nodeName"
         echo "   image: $BINARY_IMAGE"
@@ -191,6 +239,30 @@ generate_docker_compose_file(){
         let portEnd=portStart+1
     done
 
+    # validator config
+    let n=0
+    ip_nr=$1
+    while ((n < $2)); do
+        nodeName="$NODE$n"
+       
+        echo " $nodeName:"
+        echo "   container_name: $nodeName"
+        echo "   image: $BINARY_IMAGE"
+        echo "   ports:"
+        echo "   - \"$portStart-$portEnd:26656-26657\""
+        echo "   volumes:"
+        echo "   - ./workspace:/workspace"
+        echo "   command: /bin/sh -c 'junod start --home /workspace/test-chain-id/$nodeName'"
+        echo "   networks:"
+        echo "     localnet:"
+        echo -e "       ipv4_address: 192.168.10.$ip_nr\n"
+    
+        let n=n+1
+        let ip_nr=ip_nr+1
+        let portStart=portEnd+1
+        let portEnd=portStart+1
+    done
+
     echo "networks:"
     echo "  localnet:"
     echo "    driver: bridge"
@@ -202,36 +274,46 @@ generate_docker_compose_file(){
 
 }
 
-
+# $1 = number validators
+# $2 = number node
 setup_nodes(){
     clean_setup
-    init_node $1
+    init_node $1 $VALIDATOR
+    init_node $2 $NODE
+    set_persistent_peers_all_nodes $1 $2
     echo "generate_docker_compose_file"
-    generate_docker_compose_file $1 &> docker-compose.yml
+    generate_docker_compose_file $1 $2 &> docker-compose.yml
 }
 
 
 repl() {
 PS3='Please enter your choice: '
-options=("setup nodes" "init nodes" "clean setup" "docker compose file" "Quit")
+options=("setup nodes"  "init validator" "init nodes" "clean setup" "docker compose file" "Quit")
 select opt in "${options[@]}"
 do
     case $opt in
         "setup nodes")
-            read -p "number of node: " nr
-            setup_nodes $nr
+            read -p "number of validators: " valNr
+            read -p "number of nodes: " nodeNr
+            setup_nodes $valNr $nodeNr
+            ;;
+        "init validator")
+            read -p "number of validators: " valNr
+            init_node $valNr $VALIDATOR
+            set_persistent_peers_all_nodes $valNr 0
             ;;
         "init nodes")
-            read -p "number of node: " nr
-
-            init_node $nr
+            read -p "number of nodes: " nodeNr
+            init_node $nodeNr $NODE
+            set_persistent_peers_all_nodes 0 $nodeNr
             ;;
         "clean setup")
            clean_setup
             ;;
         "docker compose file")
-            read -p "number of node: " nr
-            generate_docker_compose_file $nr &> docker-compose.yml
+            read -p "number of validators: " valNr
+            read -p "number of nodes: " nodeNr
+            generate_docker_compose_file $valNr $nodeNr &> docker-compose.yml
             ;;
         "Quit")
             break
