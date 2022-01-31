@@ -163,7 +163,7 @@ set_persistent_peers(){
    sed -i "s/^persistent_peers *=.*/persistent_peers = \"$persistent_peers\"/" $currentNodeHome/config/config.toml
    
 }
- 
+
 # $1 = number of validators
 # $2 = number of nodes
 set_persistent_peers_all_nodes() {
@@ -179,6 +179,39 @@ set_persistent_peers_all_nodes() {
      # validator
     while ((node < $2)); do
         set_persistent_peers $1 $2 $node $NODE 
+        let node=node+1
+    done
+}
+
+
+# $1 = the number of the current node
+# $2 = current node type (VALIDATOR|NODE)
+enable_rpc_api_rosetta(){
+    currentNodeName="$2$1"
+    currentNodeHome=$(get_home $currentNodeName)
+    
+    # enable rpc
+    sed -i "s/laddr = \"tcp:\/\/127.0.0.1:26657\"/laddr = \"tcp:\/\/0.0.0.0:26657\"/" $currentNodeHome/config/config.toml
+
+    # enable api/rosetta
+    sed -i "s/enable = false/enable = true/" $currentNodeHome/config/app.toml
+}
+ 
+# $1 = number of validators
+# $2 = number of nodes
+enable_rpc_api_rosetta_all_nodes() {
+    echo "enable_rpc_api_rosetta_all_nodes"
+    node=0
+    # validator
+    while ((node < $1)); do
+        enable_rpc_api_rosetta $node $VALIDATOR 
+        let node=node+1
+    done
+
+    let node=0
+     # validator
+    while ((node < $2)); do
+        enable_rpc_api_rosetta $node $NODE 
         let node=node+1
     done
 }
@@ -218,7 +251,7 @@ generate_docker_compose_file(){
     n=0
     portStart=26656
     portEnd=26657
-
+    portApi=1317
     # validator config
     while ((n < $1)); do
         nodeName="$VALIDATOR$n"
@@ -227,6 +260,7 @@ generate_docker_compose_file(){
         echo "   image: $BINARY_IMAGE"
         echo "   ports:"
         echo "   - \"$portStart-$portEnd:26656-26657\""
+        echo "   - \"$portApi:1317\""
         echo "   volumes:"
         echo "   - ./workspace:/workspace"
         echo "   command: /bin/sh -c 'junod start --home /workspace/test-chain-id/$nodeName'"
@@ -237,6 +271,7 @@ generate_docker_compose_file(){
         let n=n+1
         let portStart=portEnd+1
         let portEnd=portStart+1
+        let portApi=portApi+1
     done
 
     # validator config
@@ -250,6 +285,7 @@ generate_docker_compose_file(){
         echo "   image: $BINARY_IMAGE"
         echo "   ports:"
         echo "   - \"$portStart-$portEnd:26656-26657\""
+        echo "   - \"$portApi:1317\""
         echo "   volumes:"
         echo "   - ./workspace:/workspace"
         echo "   command: /bin/sh -c 'junod start --home /workspace/test-chain-id/$nodeName'"
@@ -261,6 +297,7 @@ generate_docker_compose_file(){
         let ip_nr=ip_nr+1
         let portStart=portEnd+1
         let portEnd=portStart+1
+        let portApi=portApi+1
     done
 
     echo "networks:"
@@ -281,6 +318,7 @@ setup_nodes(){
     init_node $1 $VALIDATOR
     init_node $2 $NODE
     set_persistent_peers_all_nodes $1 $2
+    enable_rpc_api_rosetta_all_nodes  $1 $2
     echo "generate_docker_compose_file"
     generate_docker_compose_file $1 $2 &> docker-compose.yml
 }
@@ -326,38 +364,3 @@ done
 
 "$@"
 
-
-
-
-#apk add curl
-#apk add jq
-#junod query staking validators --limit 1000 -o json | jq -r '.validators[] | select(.status=="BOND_STATUS_BONDED") | [.operator_address, .status, (.tokens|tonumber / pow(10; 6)), .description.moniker] | @csv' | column -t -s"," | sort -k3 -n -r | nl
-
-
-# # Copy priv validator over from node that signed gentx to the signer	
-# cp $n0cfgDir/priv_validator_key.json $CHAINDIR/priv_validator_key.json	
-# cd $CHAINDIR	
-# ../build/horcrux create-shares ./priv_validator_key.json 2 3
-# ../build/horcrux config init $CHAINID localhost:1235 --config $(pwd)/signer1/config.yaml --cosigner --peers "tcp://localhost:2223|2,tcp://localhost:2224|3" --threshold 2 --listen "tcp://0.0.0.0:2222"
-# ../build/horcrux config init $CHAINID localhost:1234,localhost:1235 --config $(pwd)/signer2/config.yaml --cosigner --peers "tcp://localhost:2222|1,tcp://localhost:2224|3" --threshold 2 --listen "tcp://0.0.0.0:2223"
-# ../build/horcrux config init $CHAINID localhost:1234 --config $(pwd)/signer3/config.yaml --cosigner --peers "tcp://localhost:2222|1,tcp://localhost:2223|2" --threshold 2 --listen "tcp://0.0.0.0:2224"
-# cp ./private_share_1.json ./signer1/share.json	
-# cp ./private_share_2.json ./signer2/share.json	
-# cp ./private_share_3.json ./signer3/share.json		
-# cd ..	
-
-# # Start the gaia instances	
-# ./build/horcrux cosigner start --config $CHAINDIR/signer1/config.yaml > $CHAINDIR/signer1.log 2>&1 &	
-# ./build/horcrux cosigner start --config $CHAINDIR/signer2/config.yaml > $CHAINDIR/signer2.log 2>&1 &	
-# ./build/horcrux cosigner start --config $CHAINDIR/signer3/config.yaml > $CHAINDIR/signer3.log 2>&1 &	
-# sleep 5
-# gaiad $home0 start --pruning=nothing > $CHAINDIR/$CHAINID.n0.log 2>&1 &	
-# gaiad $home1 start --pruning=nothing > $CHAINDIR/$CHAINID.n1.log 2>&1 &	
-
-# echo	
-# echo "Logs:"	
-# echo "  - n0 'tail -f ./data/signer1.log'"	
-# echo "  - n1 'tail -f ./data/signer2.log'"	
-# echo "  - n2 'tail -f ./data/signer3.log'"	
-# echo "  - f0 'tail -f ./data/test-chain-id.n0.log'"	
-# echo "  - f1 'tail -f ./data/test-chain-id.n1.log'"
